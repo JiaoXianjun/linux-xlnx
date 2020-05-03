@@ -409,6 +409,7 @@ struct xilinx_dma_tx_descriptor {
  * @stop_transfer: Differentiate b/w DMA IP's quiesce
  * @tdest: TDEST value for mcdma
  * @has_vflip: S2MM vertical flip
+ * @buf_idx: In rx dma cyclic mode, this buffer idx can be checked through the residue value via device_tx_status/xilinx_dma_tx_status. This value increases 1 in each rx cyclic dma irq. The number of buffers is set to 2^n by the front-end, so the buf_idx does not need saturation and the front-end does rounding back to 0 automatically.
  */
 struct xilinx_dma_chan {
 	struct xilinx_dma_device *xdev;
@@ -446,6 +447,7 @@ struct xilinx_dma_chan {
 	int (*stop_transfer)(struct xilinx_dma_chan *chan);
 	u16 tdest;
 	bool has_vflip;
+	u32 buf_idx;
 };
 
 /**
@@ -1242,7 +1244,10 @@ static enum dma_status xilinx_dma_tx_status(struct dma_chan *dchan,
 
 	spin_unlock_irqrestore(&chan->lock, flags);
 
-	dma_set_residue(txstate, residue);
+	if (chan->cyclic)
+		dma_set_residue(txstate, chan->buf_idx);
+	else
+		dma_set_residue(txstate, residue);
 
 	return ret;
 }
@@ -1846,6 +1851,7 @@ static irqreturn_t xilinx_dma_irq_handler(int irq, void *data)
 		xilinx_dma_complete_descriptor(chan);
 		chan->idle = true;
 		chan->start_transfer(chan);
+		chan->buf_idx++;
 		spin_unlock(&chan->lock);
 	}
 
@@ -2232,6 +2238,8 @@ static struct dma_async_tx_descriptor *xilinx_dma_prep_dma_cyclic(
 	dma_async_tx_descriptor_init(&desc->async_tx, &chan->common);
 	desc->async_tx.tx_submit = xilinx_dma_tx_submit;
 
+	chan->buf_idx = 0;
+	
 	for (i = 0; i < num_periods; ++i) {
 		sg_used = 0;
 
